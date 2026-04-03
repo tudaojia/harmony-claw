@@ -5,36 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Terminal</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    
-    body {
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
       background: #000;
       color: #0f0;
-      font-family: 'Courier New', monospace;
+      font-family: 'Courier New', 'Monaco', 'Menlo', monospace;
       font-size: 14px;
       line-height: 1.2;
       overflow: hidden;
       -webkit-user-select: none;
       user-select: none;
+      -webkit-tap-highlight-color: transparent;
     }
-    
     #terminal {
       width: 100vw;
       height: 100vh;
       padding: 4px;
       white-space: pre;
       overflow: hidden;
+      position: relative;
     }
-    
     #terminal .line {
       display: block;
       min-height: 1.2em;
+      white-space: pre;
     }
-    
     #cursor {
       display: inline-block;
       width: 8px;
@@ -42,13 +37,12 @@
       background: #0f0;
       animation: blink 1s infinite;
       vertical-align: bottom;
+      position: relative;
     }
-    
     @keyframes blink {
       0%, 50% { opacity: 1; }
       51%, 100% { opacity: 0; }
     }
-    
     #input-buffer {
       position: fixed;
       bottom: 0;
@@ -56,12 +50,16 @@
       width: 100%;
       height: 0;
       opacity: 0;
+      pointer-events: none;
+    }
+    .focused #input-buffer {
+      pointer-events: auto;
     }
   </style>
 </head>
 <body>
   <div id="terminal"></div>
-  <input type="text" id="input-buffer" autocomplete="off" autocapitalize="off">
+  <input type="text" id="input-buffer" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
   
   <script>
     // 终端状态
@@ -71,7 +69,10 @@
       cursorX: 0,
       cursorY: 0,
       buffer: [],
-      fontSize: 14
+      scrollback: [],
+      fontSize: 14,
+      focused: false,
+      applicationMode: false
     };
     
     // 初始化缓冲区
@@ -90,13 +91,26 @@
       for (let y = 0; y < state.rows; y++) {
         const line = document.createElement('div');
         line.className = 'line';
-        line.textContent = state.buffer[y].join('');
         
+        // 构建行内容
+        let content = state.buffer[y].join('');
+        
+        // 添加光标
         if (y === state.cursorY) {
-          // 添加光标
+          const before = content.substring(0, state.cursorX);
+          const after = content.substring(state.cursorX);
+          
+          line.textContent = before;
+          
           const cursor = document.createElement('span');
           cursor.id = 'cursor';
-          line.insertBefore(cursor, line.childNodes[state.cursorX] || null);
+          line.appendChild(cursor);
+          
+          const afterSpan = document.createElement('span');
+          afterSpan.textContent = after;
+          line.appendChild(afterSpan);
+        } else {
+          line.textContent = content;
         }
         
         terminal.appendChild(line);
@@ -109,26 +123,38 @@
         if (char === '\n') {
           state.cursorX = 0;
           state.cursorY++;
-          if (state.cursorY >= state.rows) {
-            scrollUp();
-          }
+          if (state.cursorY >= state.rows) scrollUp();
         } else if (char === '\r') {
           state.cursorX = 0;
-        } else if (char === '\b') {
+        } else if (char === '\b' || char === '\x7f') {
           if (state.cursorX > 0) state.cursorX--;
+        } else if (char === '\t') {
+          const nextTab = Math.floor(state.cursorX / 8 + 1) * 8;
+          state.cursorX = Math.min(nextTab, state.cols - 1);
         } else if (char.charCodeAt(0) >= 32) {
           if (state.cursorX >= state.cols) {
             state.cursorX = 0;
             state.cursorY++;
-            if (state.cursorY >= state.rows) {
-              scrollUp();
-            }
+            if (state.cursorY >= state.rows) scrollUp();
           }
-          state.buffer[state.cursorY][state.cursorX] = char;
-          state.cursorX++;
+          if (state.cursorY < state.rows && state.cursorX < state.cols) {
+            state.buffer[state.cursorY][state.cursorX] = char;
+            state.cursorX++;
+          }
         }
       }
       render();
+    }
+    
+    // 写入 base64 数据
+    function writeBase64(base64, appMode) {
+      try {
+        const binary = atob(base64);
+        const data = binary;
+        write(data);
+      } catch (e) {
+        console.error('writeBase64 error:', e);
+      }
     }
     
     // 滚动
@@ -158,13 +184,34 @@
     function setFontSize(size) {
       state.fontSize = size;
       document.body.style.fontSize = size + 'px';
+      document.getElementById('cursor').style.height = size + 'px';
+      document.getElementById('cursor').style.width = (size * 0.5) + 'px';
+    }
+    
+    // 设置焦点
+    function setFocused(focused) {
+      state.focused = focused;
+      if (focused) {
+        document.body.classList.add('focused');
+        document.getElementById('input-buffer').focus();
+      } else {
+        document.body.classList.remove('focused');
+      }
     }
     
     // 输入处理
     const inputBuffer = document.getElementById('input-buffer');
     
     document.addEventListener('click', () => {
-      inputBuffer.focus();
+      setFocused(true);
+    });
+    
+    inputBuffer.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (state.focused) {
+          inputBuffer.focus();
+        }
+      }, 100);
     });
     
     inputBuffer.addEventListener('input', (e) => {
@@ -179,30 +226,18 @@
       let key = '';
       
       switch (e.key) {
-        case 'Enter':
-          key = '\n';
-          break;
-        case 'Backspace':
-          key = '\b';
-          break;
-        case 'Tab':
-          key = '\t';
-          break;
-        case 'ArrowUp':
-          key = '\x1b[A';
-          break;
-        case 'ArrowDown':
-          key = '\x1b[B';
-          break;
-        case 'ArrowLeft':
-          key = '\x1b[D';
-          break;
-        case 'ArrowRight':
-          key = '\x1b[C';
-          break;
-        case 'Escape':
-          key = '\x1b';
-          break;
+        case 'Enter': key = '\n'; break;
+        case 'Backspace': key = '\b'; break;
+        case 'Tab': key = '\t'; e.preventDefault(); break;
+        case 'ArrowUp': key = '\x1b[A'; e.preventDefault(); break;
+        case 'ArrowDown': key = '\x1b[B'; e.preventDefault(); break;
+        case 'ArrowLeft': key = '\x1b[D'; e.preventDefault(); break;
+        case 'ArrowRight': key = '\x1b[C'; e.preventDefault(); break;
+        case 'Escape': key = '\x1b'; break;
+        case 'Home': key = '\x1b[H'; e.preventDefault(); break;
+        case 'End': key = '\x1b[F'; e.preventDefault(); break;
+        case 'PageUp': key = '\x1b[5~'; e.preventDefault(); break;
+        case 'PageDown': key = '\x1b[6~'; e.preventDefault(); break;
       }
       
       if (key && native) {
@@ -216,11 +251,13 @@
     render();
     
     // 暴露给外部
-    window.term = {
+    window.exports = {
       write,
+      writeBase64,
       clear,
       resize,
-      setFontSize
+      setFontSize,
+      setFocused
     };
     
     // 加载完成

@@ -5,15 +5,32 @@
 import { webview } from '@kit.ArkWeb';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { pasteboard } from '@kit.BasicServicesKit';
+import { pasteboard, deviceInfo } from '@kit.BasicServicesKit';
 import { TerminalSessionManager } from '../models/TerminalSessionManager';
 import { BootstrapManager } from '../models/BootstrapManager';
 import { JsBridge } from '../utils/JsBridge';
 import { EventBridge } from '../utils/EventBridge';
 import { Constants } from '../common/Constants';
+import terminalNative from '../lib/TerminalNative';
+import stringToArrayBuffer from '../lib/stringToArrayBuffer';
+import {
+  applyVirtualKeyModifiers,
+  FunctionKeySequences,
+  getVirtualKeyMetrics,
+  NormalKeySequences
+} from '../lib/terminalVirtualKeys';
 
 const DOMAIN = 0x0000;
 const TAG = 'MainPage';
+
+// 虚拟按键尺寸
+const VKeyMetrics = getVirtualKeyMetrics(deviceInfo.deviceType);
+const VKeyMargin = VKeyMetrics.margin;
+const VKeyPadding = VKeyMetrics.padding;
+const VKeyHeight = VKeyMetrics.height;
+const VKeyWidth = VKeyMetrics.width;
+const VKeyFontSize = VKeyMetrics.fontSize;
+const VKeyRadius = VKeyMetrics.radius;
 
 @Entry
 @Component
@@ -22,11 +39,13 @@ struct MainPage {
   @State currentTextSize: number = 14;
   @State ctrlPressed: boolean = false;
   @State altPressed: boolean = false;
+  @State shiftPressed: boolean = false;
   @State showTerminal: boolean = false;
   @State sessions: Array<SessionInfo> = [];
   @State activeSessionId: string = '';
   @State showVirtKey: boolean = true;
   @State fnPressed: boolean = false;
+  @State applicationMode: boolean = false;
   
   // 控制器
   private webController: webview.WebviewController = new webview.WebviewController();
@@ -37,6 +56,11 @@ struct MainPage {
   private bootstrapManager: BootstrapManager | null = null;
   private eventBridge: EventBridge | null = null;
   private jsBridge: JsBridge | null = null;
+  
+  // 输出缓冲
+  private pendingChunks: Uint8Array[] = [];
+  private flushTimeoutID: number | undefined = undefined;
+  private readonly FLUSH_INTERVAL = 16; // 60FPS
 
   aboutToAppear() {
     hilog.info(DOMAIN, TAG, 'MainPage aboutToAppear');
@@ -58,13 +82,6 @@ struct MainPage {
     
     if (isInstalled) {
       this.showTerminalView();
-      const session = this.sessionManager.createSession();
-      if (this.bootstrapManager.needsPostSetup()) {
-        setTimeout(() => {
-          const script = this.bootstrapManager!.postSetupScript;
-          session.write(`bash ${script}\n`);
-        }, 500);
-      }
     }
   }
 
@@ -117,7 +134,10 @@ struct MainPage {
               .fontSize(16)
               .fontColor('#888888')
               .backgroundColor(Color.Transparent)
-              .onClick(() => this.sessionManager?.createSession());
+              .onClick(() => {
+                this.sessionManager?.createSession();
+                this.webController.runJavaScript('exports.clear()');
+              });
           }
         }
         .scrollable(ScrollDirection.Horizontal)
@@ -142,7 +162,10 @@ struct MainPage {
             .width(32)
             .height(32)
             .onClick(() => {
-              if (this.currentTextSize > 10) this.currentTextSize -= 2;
+              if (this.currentTextSize > 10) {
+                this.currentTextSize -= 2;
+                this.webController.runJavaScript(`exports.setFontSize(${this.currentTextSize})`);
+              }
             });
           
           Text(`${this.currentTextSize}`)
@@ -157,7 +180,10 @@ struct MainPage {
             .width(32)
             .height(32)
             .onClick(() => {
-              if (this.currentTextSize < 24) this.currentTextSize += 2;
+              if (this.currentTextSize < 24) {
+                this.currentTextSize += 2;
+                this.webController.runJavaScript(`exports.setFontSize(${this.currentTextSize})`);
+              }
             });
         }
         .margin({ right: 16 });
@@ -193,7 +219,7 @@ struct MainPage {
   @Builder
   WebViewComponent() {
     Web({
-      src: this.getWebViewUrl(),
+      src: $rawfile('www/index.html'),
       controller: this.webController
     })
       .javaScriptAccess(true)
@@ -227,8 +253,20 @@ struct MainPage {
   @Builder
   TerminalContainer() {
     Column() {
-      // 终端视图
-      this.TerminalView();
+      // 终端视图 (WebView 渲染)
+      Web({
+        src: $rawfile('term/term.html'),
+        controller: this.webController
+      })
+        .javaScriptProxy({
+          object: this,
+          name: 'native',
+          methodList: ['sendInput', 'resize', 'load', 'getFontSize', 'getDeviceType', 'setApplicationMode'],
+          controller: this.webController,
+          asyncMethodList: []
+        })
+        .backgroundColor('#000')
+        .layoutWeight(1);
       
       // 虚拟按键栏
       if (this.showVirtKey) {
@@ -242,68 +280,50 @@ struct MainPage {
   }
 
   @Builder
-  TerminalView() {
-    // 使用 WebView 渲染终端 (参考 HiSH)
-    Web({
-      src: $rawfile('term/term.html'),
-      controller: this.webController
-    })
-      .javaScriptProxy({
-        object: this,
-        name: 'native',
-        methodList: ['sendInput', 'resize', 'load', 'getFontSize'],
-        controller: this.webController,
-        asyncMethodList: []
-      })
-      .backgroundColor('#000')
-      .layoutWeight(1);
-  }
-
-  @Builder
   VirtualKeys() {
     Column() {
       if (this.fnPressed) {
         // FN 模式 - 功能键
         Row() {
-          this.VKey('FN', () => this.fnPressed = !this.fnPressed, true);
-          this.VKey('F1', () => this.sendKey('\x1bOP'));
-          this.VKey('F2', () => this.sendKey('\x1bOQ'));
-          this.VKey('F3', () => this.sendKey('\x1bOR'));
-          this.VKey('F4', () => this.sendKey('\x1bOS'));
+          this.VKey('FN', () => this.fnPressed = !this.fnPressed, this.fnPressed);
+          this.VKey('F1', () => this.sendKey(FunctionKeySequences.F1));
+          this.VKey('F2', () => this.sendKey(FunctionKeySequences.F2));
+          this.VKey('F3', () => this.sendKey(FunctionKeySequences.F3));
+          this.VKey('F4', () => this.sendKey(FunctionKeySequences.F4));
           Blank();
-          this.VKey('F5', () => this.sendKey('\x1b[15~'));
-          this.VKey('F6', () => this.sendKey('\x1b[17~'));
+          this.VKey('F5', () => this.sendKey(FunctionKeySequences.F5));
+          this.VKey('F6', () => this.sendKey(FunctionKeySequences.F6));
           this.HideVKeyButton();
         }
         Row() {
-          this.VKey('F7', () => this.sendKey('\x1b[18~'));
-          this.VKey('F8', () => this.sendKey('\x1b[19~'));
-          this.VKey('F9', () => this.sendKey('\x1b[20~'));
-          this.VKey('F10', () => this.sendKey('\x1b[21~'));
-          this.VKey('F11', () => this.sendKey('\x1b[23~'));
-          this.VKey('F12', () => this.sendKey('\x1b[24~'));
+          this.VKey('F7', () => this.sendKey(FunctionKeySequences.F7));
+          this.VKey('F8', () => this.sendKey(FunctionKeySequences.F8));
+          this.VKey('F9', () => this.sendKey(FunctionKeySequences.F9));
+          this.VKey('F10', () => this.sendKey(FunctionKeySequences.F10));
+          this.VKey('F11', () => this.sendKey(FunctionKeySequences.F11));
+          this.VKey('F12', () => this.sendKey(FunctionKeySequences.F12));
         }
       } else {
         // 普通模式
         Row() {
-          this.VKey('ESC', () => this.sendKey('\x1b'));
+          this.VKey('ESC', () => this.sendKey(NormalKeySequences.ESC));
           this.VKey('FN', () => this.fnPressed = !this.fnPressed, this.fnPressed);
           this.VKey('/', () => this.sendKey('/'));
           Blank();
-          this.VKey('PGUP', () => this.sendKey('\x1b[5~'));
-          this.VKey('HOME', () => this.sendKey('\x1b[H'));
-          this.VKey('↑', () => this.sendKey('\x1b[A'));
-          this.VKey('END', () => this.sendKey('\x1b[F'));
+          this.VKey('PGUP', () => this.sendKey(NormalKeySequences.PGUP));
+          this.VKey('HOME', () => this.sendKey(NormalKeySequences.HOME));
+          this.VKey('↑', () => this.sendKey(this.applicationMode ? NormalKeySequences.UP_APP : NormalKeySequences.UP));
+          this.VKey('END', () => this.sendKey(NormalKeySequences.END));
         }
         Row() {
-          this.VKey('TAB', () => this.sendKey('\t'));
+          this.VKey('TAB', () => this.sendKey(NormalKeySequences.TAB));
           this.VKey('CTRL', () => this.ctrlPressed = !this.ctrlPressed, this.ctrlPressed);
           this.VKey('-', () => this.sendKey('-'));
           Blank();
-          this.VKey('PGDN', () => this.sendKey('\x1b[6~'));
-          this.VKey('←', () => this.sendKey('\x1b[D'));
-          this.VKey('↓', () => this.sendKey('\x1b[B'));
-          this.VKey('→', () => this.sendKey('\x1b[C'));
+          this.VKey('PGDN', () => this.sendKey(NormalKeySequences.PGDN));
+          this.VKey('←', () => this.sendKey(this.applicationMode ? NormalKeySequences.LEFT_APP : NormalKeySequences.LEFT));
+          this.VKey('↓', () => this.sendKey(this.applicationMode ? NormalKeySequences.DOWN_APP : NormalKeySequences.DOWN));
+          this.VKey('→', () => this.sendKey(this.applicationMode ? NormalKeySequences.RIGHT_APP : NormalKeySequences.RIGHT));
           this.HideVKeyButton();
         }
       }
@@ -316,25 +336,27 @@ struct MainPage {
   @Builder
   VKey(label: string, action: () => void, active: boolean = false) {
     Button(label)
-      .fontSize(12)
+      .fontSize(VKeyFontSize)
       .fontWeight(active ? FontWeight.Bold : FontWeight.Normal)
       .backgroundColor(active ? '#2196F3' : '#333333')
       .fontColor(Color.White)
-      .height(36)
-      .borderRadius(6)
-      .margin({ left: 2, right: 2 })
+      .height(VKeyHeight)
+      .borderRadius(VKeyRadius)
+      .margin({ left: VKeyMargin, right: VKeyMargin })
+      .padding({ left: VKeyPadding, right: VKeyPadding })
       .onClick(action);
   }
 
   @Builder
   HideVKeyButton() {
     Button('▼')
-      .fontSize(12)
+      .fontSize(VKeyFontSize)
       .backgroundColor('#333333')
       .fontColor('#888888')
-      .height(36)
-      .width(36)
-      .borderRadius(6)
+      .height(VKeyHeight)
+      .width(VKeyHeight)
+      .borderRadius(VKeyRadius)
+      .margin({ left: VKeyMargin, right: VKeyMargin })
       .onClick(() => this.showVirtKey = false);
   }
 
@@ -350,14 +372,6 @@ struct MainPage {
   }
 
   // ========== 方法 ==========
-
-  private getWebViewUrl(): string {
-    const wwwDir = this.bootstrapManager?.wwwDir;
-    if (wwwDir) {
-      return `file://${wwwDir}/index.html`;
-    }
-    return 'resource://rawfile/www/index.html';
-  }
 
   showTerminalView(): void {
     if (!this.sessionManager?.activeSession) {
@@ -379,38 +393,124 @@ struct MainPage {
   }
 
   private sendKey(key: string): void {
-    let data = key;
+    // 应用修饰键
+    const result = applyVirtualKeyModifiers(key, this.ctrlPressed, this.shiftPressed);
+    let data = result.data;
     
-    // 处理 Ctrl 组合
-    if (this.ctrlPressed && key.length === 1) {
-      const code = key.charCodeAt(0);
-      if (code >= 97 && code <= 122) {
-        data = String.fromCharCode(code - 96);
-      }
+    if (result.shouldResetCtrl) {
+      this.ctrlPressed = false;
     }
     
-    this.sessionManager?.activeSession?.write(data);
-    
-    // 重置修饰键
-    this.ctrlPressed = false;
+    // 发送输入
+    this.sendInput(data);
   }
 
   // ========== JavaScript 接口 ==========
 
   sendInput(data: string): void {
-    this.sessionManager?.activeSession?.write(data);
+    hilog.debug(DOMAIN, TAG, `sendInput: ${data}`);
+    
+    // 转换为 ArrayBuffer
+    const buffer = stringToArrayBuffer(data, 'utf-8');
+    
+    // 发送到原生模块
+    terminalNative.sendInput(buffer);
   }
 
   resize(width: number, height: number): void {
     hilog.info(DOMAIN, TAG, `resize: ${width}x${height}`);
+    // 发送终端大小变化
+    this.sendInput('\x1b' + `[8;${height};${width}t`);
   }
 
   load(): void {
     hilog.info(DOMAIN, TAG, 'load terminal');
+    
+    // 设置焦点
+    this.webController.runJavaScript('exports.setFocused(true)');
+    
+    // 注册数据回调
+    terminalNative.onData((data: ArrayBuffer) => {
+      this.onData(data);
+    });
+    
+    // 注册关闭回调
+    terminalNative.onShutdown(() => {
+      hilog.info(DOMAIN, TAG, 'terminal shutdown');
+    });
   }
 
   getFontSize(): number {
     return this.currentTextSize;
+  }
+
+  getDeviceType(): string {
+    return deviceInfo.deviceType;
+  }
+
+  setApplicationMode(mode: boolean): void {
+    this.applicationMode = mode;
+    hilog.info(DOMAIN, TAG, `applicationMode: ${mode}`);
+  }
+
+  // ========== 数据处理 ==========
+
+  private onData(ab: ArrayBuffer): void {
+    try {
+      // 将收到的数据块加入队列
+      this.pendingChunks.push(new Uint8Array(ab));
+      
+      // 如果没有正在等待的 Flush 任务，则调度一个
+      if (this.flushTimeoutID === undefined) {
+        this.flushTimeoutID = setTimeout(() => {
+          this.flushData();
+        }, this.FLUSH_INTERVAL);
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, `onData failed: ${e}`);
+    }
+  }
+
+  private flushData(): void {
+    this.flushTimeoutID = undefined;
+    
+    if (this.pendingChunks.length === 0) return;
+    
+    try {
+      // 计算总长度
+      let totalLength = 0;
+      for (const chunk of this.pendingChunks) {
+        totalLength += chunk.length;
+      }
+      
+      // 合并所有 Chunk
+      const merged = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of this.pendingChunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      
+      // 清空缓冲区
+      this.pendingChunks = [];
+      
+      // 转换为 base64 并发送到 WebView
+      const base64 = this.arrayBufferToBase64(merged.buffer);
+      this.webController.runJavaScript(`exports.writeBase64("${base64}", ${this.applicationMode})`);
+      
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, `flushData failed: ${e}`);
+      this.pendingChunks = [];
+    }
+  }
+
+  private arrayBufferToBase64(buffer: ArrayBuffer): string {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
   }
 }
 
