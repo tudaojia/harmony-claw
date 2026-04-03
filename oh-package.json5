@@ -1,0 +1,11 @@
+{
+  "name": "harmony-claw",
+  "version": "1.0.0",
+  "description": "OpenClaw for HarmonyOS - Native Terminal Emulator",
+  "author": "OpenClaw Team",
+  "license": "MIT",
+  "dependencies": {
+    "@ohos/terminal": "file:terminal",
+    "@ohos/bootstrap": "file:bootstrap"
+  }
+}

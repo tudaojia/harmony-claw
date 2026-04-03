@@ -1,0 +1,12 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "HarmonyClaw Entry Module",
+  "main": "",
+  "author": "OpenClaw Team",
+  "license": "MIT",
+  "dependencies": {
+    "@ohos/terminal": "file:../terminal",
+    "@ohos/bootstrap": "file:../bootstrap"
+  }
+}

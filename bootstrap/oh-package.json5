@@ -1,0 +1,8 @@
+{
+  "name": "@ohos/bootstrap",
+  "version": "1.0.0",
+  "description": "Bootstrap Installation Module",
+  "main": "index.ets",
+  "author": "OpenClaw Team",
+  "license": "MIT"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "@ohos/terminal",
+  "version": "1.0.0",
+  "description": "Terminal Emulator Module",
+  "main": "index.ets",
+  "author": "OpenClaw Team",
+  "license": "MIT"
+}

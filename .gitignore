@@ -1,0 +1,16 @@
+# HarmonyOS 项目
+build/
+node_modules/
+.ohpm/
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# 签名
+signature/
+
+# 系统文件
+.DS_Store
+Thumbs.db

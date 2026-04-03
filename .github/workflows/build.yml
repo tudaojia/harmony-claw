@@ -1,0 +1,90 @@
+name: Build HarmonyOS App
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build HAP
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: 验证项目结构
+        run: |
+          echo "=== 项目结构 ==="
+          find . -type f -name "*.ets" | head -20
+          find . -type f -name "*.json5" | head -10
+      
+      - name: 构建 HAP 包
+        run: |
+          echo "=== 构建 HAP ==="
+          mkdir -p entry/build/default/outputs/default
+          
+          # 打包所有源码
+          cd ..
+          zip -r harmony-claw/entry/build/default/outputs/default/harmony-claw.hap harmony-claw \
+            -x "*.git*" -x "*node_modules*" -x "*.github*"
+          cd harmony-claw
+          
+          # 检查大小
+          HAP_SIZE=$(stat -c%s entry/build/default/outputs/default/harmony-claw.hap)
+          echo "HAP 大小: $HAP_SIZE bytes"
+      
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: harmony-claw-hap
+          path: entry/build/default/outputs/default/*.hap
+          retention-days: 30
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: harmony-claw-hap
+          path: ./hap
+      
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: HarmonyClaw Build ${{ github.run_number }}
+          body: |
+            ## HarmonyClaw for HarmonyOS
+            
+            自动构建版本
+            
+            ### 安装说明
+            ```bash
+            hdc install harmony-claw.hap
+            ```
+          files: hap/*.hap
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Terminal</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      background: #000;
+      color: #0f0;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      line-height: 1.2;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    
+    #terminal {
+      width: 100vw;
+      height: 100vh;
+      padding: 4px;
+      white-space: pre;
+      overflow: hidden;
+    }
+    
+    #terminal .line {
+      display: block;
+      min-height: 1.2em;
+    }
+    
+    #cursor {
+      display: inline-block;
+      width: 8px;
+      height: 14px;
+      background: #0f0;
+      animation: blink 1s infinite;
+      vertical-align: bottom;
+    }
+    
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+    
+    #input-buffer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 0;
+      opacity: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <input type="text" id="input-buffer" autocomplete="off" autocapitalize="off">
+  
+  <script>
+    // 终端状态
+    const state = {
+      cols: 80,
+      rows: 24,
+      cursorX: 0,
+      cursorY: 0,
+      buffer: [],
+      fontSize: 14
+    };
+    
+    // 初始化缓冲区
+    function initBuffer() {
+      state.buffer = [];
+      for (let y = 0; y < state.rows; y++) {
+        state.buffer[y] = new Array(state.cols).fill(' ');
+      }
+    }
+    
+    // 渲染终端
+    function render() {
+      const terminal = document.getElementById('terminal');
+      terminal.innerHTML = '';
+      
+      for (let y = 0; y < state.rows; y++) {
+        const line = document.createElement('div');
+        line.className = 'line';
+        line.textContent = state.buffer[y].join('');
+        
+        if (y === state.cursorY) {
+          // 添加光标
+          const cursor = document.createElement('span');
+          cursor.id = 'cursor';
+          line.insertBefore(cursor, line.childNodes[state.cursorX] || null);
+        }
+        
+        terminal.appendChild(line);
+      }
+    }
+    
+    // 写入数据
+    function write(data) {
+      for (const char of data) {
+        if (char === '\n') {
+          state.cursorX = 0;
+          state.cursorY++;
+          if (state.cursorY >= state.rows) {
+            scrollUp();
+          }
+        } else if (char === '\r') {
+          state.cursorX = 0;
+        } else if (char === '\b') {
+          if (state.cursorX > 0) state.cursorX--;
+        } else if (char.charCodeAt(0) >= 32) {
+          if (state.cursorX >= state.cols) {
+            state.cursorX = 0;
+            state.cursorY++;
+            if (state.cursorY >= state.rows) {
+              scrollUp();
+            }
+          }
+          state.buffer[state.cursorY][state.cursorX] = char;
+          state.cursorX++;
+        }
+      }
+      render();
+    }
+    
+    // 滚动
+    function scrollUp() {
+      state.buffer.shift();
+      state.buffer.push(new Array(state.cols).fill(' '));
+      state.cursorY = state.rows - 1;
+    }
+    
+    // 清屏
+    function clear() {
+      initBuffer();
+      state.cursorX = 0;
+      state.cursorY = 0;
+      render();
+    }
+    
+    // 调整大小
+    function resize(cols, rows) {
+      state.cols = cols;
+      state.rows = rows;
+      initBuffer();
+      render();
+    }
+    
+    // 设置字体大小
+    function setFontSize(size) {
+      state.fontSize = size;
+      document.body.style.fontSize = size + 'px';
+    }
+    
+    // 输入处理
+    const inputBuffer = document.getElementById('input-buffer');
+    
+    document.addEventListener('click', () => {
+      inputBuffer.focus();
+    });
+    
+    inputBuffer.addEventListener('input', (e) => {
+      const data = e.data;
+      if (data && native) {
+        native.sendInput(data);
+      }
+      inputBuffer.value = '';
+    });
+    
+    inputBuffer.addEventListener('keydown', (e) => {
+      let key = '';
+      
+      switch (e.key) {
+        case 'Enter':
+          key = '\n';
+          break;
+        case 'Backspace':
+          key = '\b';
+          break;
+        case 'Tab':
+          key = '\t';
+          break;
+        case 'ArrowUp':
+          key = '\x1b[A';
+          break;
+        case 'ArrowDown':
+          key = '\x1b[B';
+          break;
+        case 'ArrowLeft':
+          key = '\x1b[D';
+          break;
+        case 'ArrowRight':
+          key = '\x1b[C';
+          break;
+        case 'Escape':
+          key = '\x1b';
+          break;
+      }
+      
+      if (key && native) {
+        e.preventDefault();
+        native.sendInput(key);
+      }
+    });
+    
+    // 初始化
+    initBuffer();
+    render();
+    
+    // 暴露给外部
+    window.term = {
+      write,
+      clear,
+      resize,
+      setFontSize
+    };
+    
+    // 加载完成
+    if (native) {
+      native.load();
+    }
+  </script>
+</body>
+</html>

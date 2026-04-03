@@ -1,0 +1,10 @@
+{
+  "color": [
+    { "name": "start_window_background", "value": "#0a0a0a" },
+    { "name": "primary", "value": "#2196F3" },
+    { "name": "secondary", "value": "#4CAF50" },
+    { "name": "background", "value": "#0a0a0a" },
+    { "name": "text_primary", "value": "#FFFFFF" },
+    { "name": "text_secondary", "value": "#888888" }
+  ]
+}
